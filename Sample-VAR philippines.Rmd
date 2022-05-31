@@ -1,0 +1,144 @@
+---
+title: "VAR-sample-project"
+author: "RyanLevis 301403028"
+date: "29/05/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = FALSE, include = FALSE)
+macvar <- read.csv(file.choose(SampleVAR_1_))
+```
+install.packages("vars")
+library(vars)
+library(mFilter)
+library(tseries)
+library(TSstudio)
+library(forecast)
+library(tidyverse)
+
+#Now that we have our data loaded and our packages installed, let's declare our variables in the dataset as time-series. Note that the $ is the call the variable from the dataset. All variables will have the same start date for simplicity.  
+
+```{r}
+realgdpg <- ts(macvar$real_gdp_growth, start= c(1999,3,31), frequency = 4)
+pstockind <- ts(macvar$psei, start = c(1999,3,31), frequency=4)
+bsp_orrp <- ts(macvar$bsp_rrp, start = c(1999,3,31), frequency = 4) 
+jobless <- ts(macvar$unem, start = c(1999,3,31), frequency = 4) 
+```
+
+## lets visualize our values 
+
+```{r}
+ts.plot(realgdpg)
+ts.plot(pstockind)
+ts.plot(bsp_orrp)
+ts.plot(jobless)
+```
+##We should assess whether the variables are stationary. We'll use the Phillips Perron unit root test to indicate the number of lags in our data. 
+```{r}
+PP.test(bsp_orrp, lshort = TRUE)
+PP.test(jobless, lshort = TRUE)
+PP.test(pstockind, lshort = TRUE)
+PP.test(realgdpg, lshort = TRUE)
+```
+### In this estimation above, we find that the variables are stationary, except for the pstockind variable. We still run the VAR estimation using level data, however, we will be more confident in our stationary variable results and predictions. 
+
+# We can now estimate our VAR. Let's bind our VAR variables together, then we'll select the best lag order behind the VAR we will be using. 
+
+## Step 1) Binding our VAR system. cbind() groups our time series. 
+
+```{r}
+v1 <- cbind(bsp_orrp, jobless, pstockind, realgdpg)
+colnames(v1) <- cbind("Overnight_Reverse_Repurchase_Rate", "Unemployement_Rate", "Phillipines_Stock_Exchange_Index", "Real_GDP_Growth")
+```
+
+## Step 2) Determine lag order, using the VARselect() command 
+
+```{r}
+lagselect <- VARselect(v1, lag.max = 10, type = "const")
+lagselect$selection
+```
+### The command suggests lag order 4 or 1.  
+
+## Step 3) Estimate a model using the var() command. p is the number of lags used, since we determined that 1 or 4 lags is best, we'll set this to 4 and stick to the Akaike Information Criterion output. 
+```{r}
+UVARModel1 <- VAR(v1, p = 4, type = "const", season = NULL, exog = NULL) 
+summary(UVARModel1)
+```
+
+# Model Diagnosis 
+## An assumption of VAR is that the residuals should be non-autocorrelated. Building upon the assumption that the residuals are not correlated with prior periods. 
+
+```{r}
+Serial1 <- serial.test(UVARModel1, lags.pt = 15, lags.bg = 5, type = "PT.asymptotic")
+Serial1
+```
+
+## We want to examine the VAR to see if there is heteroscedasticity, which would result in a change in the variance in the residuals
+```{r}
+Arch1 <- arch.test(UVARModel1, lags.multi = 4
+, multivariate.only = TRUE)
+Arch1
+```
+### Fail to reject null hypothesis, there is no heteroscedasticity in the model
+## Now we want to test the normality of the residuals distribution. 
+```{r}
+Norm1 <- normality.test(UVARModel1, multivariate.only = TRUE)
+Norm1
+```
+ ### JB-test and Kurtosis show significant difference from the normal distribution, but skewness appears to be normally distributed. We should assume that the residuals are not normally distributed in this case
+
+## Now we want to test for structural breaks using the stability test. If there is a structural breaks, the whole estimation would be inaccurate. 
+```{r}
+Stability1 <- stability(UVARModel1, type = "OLS-CUSUM")
+par("mar")
+par(mar=c(1,1,1,1))
+plot(Stability1)
+```
+### Based on these results, there is no structural breaks as the red lines are untouched 
+
+
+#Policy Simulations 
+```{r}
+GrangerJobless <- causality(UVARModel1, cause = "Unemployement_Rate")
+GrangerJobless
+GrangerStock <- causality(UVARModel1, cause = "Phillipines_Stock_Exchange_Index")
+GrangerStock
+GrangerGDPG <- causality(UVARModel1, cause = "Real_GDP_Growth")
+GrangerGDPG
+GrangerORRP<- causality(UVARModel1, cause = "Overnight_Reverse_Repurchase_Rate")
+GrangerORRP
+```
+
+##Impulse Response Functions 
+### We will now turn to our impulse response functions. While we can get more impulse response functions than the ones below, we will zero in on the impact of a shock in ORRP to the other variables in the system. 
+```{r}
+ORRPirf <- irf(UVARModel1, impulse = "Overnight_Reverse_Repurchase_Rate", response = "Overnight_Reverse_Repurchase_Rate", n.ahead = 20, boot = TRUE)
+plot(ORRPirf, ylab = "Overnight_Reverse_Repurchase_Rate", main = "ORRP's shock to ORRP")
+
+RGDPGirf <- irf(UVARModel1, impulse = "Overnight_Reverse_Repurchase_Rate", response = "Real_GDP_Growth", n.ahead = 20, boot = TRUE)
+
+plot(RGDPGirf, ylab = "Real_GDP_Growth", main = "ORRP's shock to Real GDP Growth")
+
+PSEIirf <- irf(UVARModel1, impulse = "Overnight_Reverse_Repurchase_Rate", response = "Phillipines_Stock_Exchange_Index", n.ahead = 20, boot = TRUE)
+
+plot(PSEIirf, ylab = "Phillipines_Stock_Exchange_Index", main = "ORRP's shock to Phillipines Stock Exchange Index")
+
+Joblessirf <- irf(UVARModel1, impulse = "Overnight_Reverse_Repurchase_Rate", response = "Unemployement_Rate", n.ahead = 20, boot = TRUE)
+plot(Joblessirf, ylab = "Unemployment Rate", main = "ORRP's response to the Unemployment Rate")
+```
+# Forecasting using VAR 
+```{r}
+forecast <- predict(UVARModel1, n.ahead = 12, ci = 0.95)
+
+fanchart(forecast, names = "bsp_orrp", main = "Fanchart for ORRP", xlab = "Horizon", ylab = "bsp_orrp")
+
+forecast
+
+fanchart(forecast, names = "Unemployement_Rate", main = "Fanchart for Unemployment", xlab = "Horizon", ylab = "jobless")
+
+fanchart(forecast, names = "Phillipines_Stock_Exchange_Index", main = "Fanchart for the Philippines stock exchange index", xlab = "Horizon", ylab = "pstockind")
+
+fanchart(forecast, names = "Real_GDP_Growth", main = "Fanchart for Real GDP Growth", xlab = "Horizon", ylab = "realgdpg")
+
+```
